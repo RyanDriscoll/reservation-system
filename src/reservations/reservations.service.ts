@@ -1,12 +1,15 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { addDays, addMinutes, endOfDay, isEqual, startOfDay } from 'date-fns';
+import { CronService } from 'src/cron/cron.service';
 import { CreateAppointmentDto } from 'src/dto/create-appointment.dto copy';
 import { CreateAvailabilityDto } from 'src/dto/create-availability.dto';
 import { Appointment } from 'src/entities/reservations/appointment.entity';
 import { Availability } from 'src/entities/reservations/availability.entity';
 import { Provider } from 'src/entities/users/provider.entity';
-import { Between, Repository } from 'typeorm';
+import { Between, DeleteResult, Repository } from 'typeorm';
+
+const RESERVATION_EXPIRATION_MINUTES = 30;
 
 @Injectable()
 export class ReservationsService {
@@ -17,6 +20,7 @@ export class ReservationsService {
     private appointmentRepository: Repository<Appointment>,
     @InjectRepository(Provider)
     private providersRepository: Repository<Provider>,
+    private cronService: CronService,
   ) {}
 
   async createAvailability(
@@ -113,6 +117,14 @@ export class ReservationsService {
     appointment.availability = availability;
 
     appointment = await this.appointmentRepository.save(appointment);
+
+    // schedule cron job
+    this.cronService.scheduleJob(
+      `appointment-${appointment.appointmentId}`,
+      this.getDateThirtyMinutesFromNow(),
+      this.deleteUnconfirmedAppointment(appointment.appointmentId),
+    );
+
     // remove existing appointments because it's nobody's business
     delete appointment.availability.appointments;
     return appointment;
@@ -126,6 +138,22 @@ export class ReservationsService {
       { confirmed: true },
     );
     return this.appointmentRepository.findOne({ where: { appointmentId } });
+  }
+
+  deleteUnconfirmedAppointment(
+    appointmentId: number,
+  ): () => Promise<DeleteResult> {
+    return () =>
+      this.appointmentRepository.delete({
+        appointmentId,
+        confirmed: false,
+      });
+  }
+
+  getDateThirtyMinutesFromNow() {
+    const date = new Date();
+    date.setMinutes(date.getMinutes() + RESERVATION_EXPIRATION_MINUTES);
+    return date;
   }
 
   getJsDate(dateString?: string): Date {
